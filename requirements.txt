@@ -1,0 +1,25 @@
+## Core API & Framework
+fastapi
+uvicorn[standard]
+
+## Data & Serialization
+orjson
+
+## AI & Modeling
+pydantic
+pydantic-ai
+
+## Redis (session store)
+redis
+
+## HTTP client (external callback / future integrations)
+httpx
+
+## Logging / Observability
+structlog
+python-dotenv
+
+## Testing (backend)
+pytest
+pytest-asyncio
+
