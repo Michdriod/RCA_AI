@@ -18,6 +18,18 @@ class Settings(BaseSettings):
     SESSION_TTL_SECONDS: int = Field(1800, description="TTL for session keys in seconds")
     GROQ_API_KEY: Optional[str] = Field(None, description="Groq API key for model access")
     AI_MODEL: str = Field("openai/gpt-oss-20b", description="Groq model name (e.g. 'llama-3.3-70b-versatile')")
+    AI_TEMPERATURE: float = Field(
+        0.3,
+        description="LLM temperature (0.0-1.0). Lower = more deterministic, focused. Recommended: 0.2-0.4 for RCA.",
+        ge=0.0,
+        le=1.0,
+    )
+    AI_TOP_P: float = Field(
+        0.85,
+        description="LLM nucleus sampling top_p (0.0-1.0). Controls diversity. Recommended: 0.8-0.9 for RCA.",
+        ge=0.0,
+        le=1.0,
+    )
     EXTERNAL_CALLBACK_URL: Optional[str] = Field(
         None,
         description="Optional URL to receive a POST callback with final root cause payload when a session completes.",

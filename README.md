@@ -123,6 +123,31 @@ await five_whys_ai.analyze_root_cause_async(session)
 
 Question generation applies semantic deduplication using a similarity threshold (≥ 0.85) and up to 3 penalty-driven retries for deeper causal specificity.
 
+### LLM Configuration for High-Accuracy RCA
+
+The system uses optimized LLM parameters for focused, deterministic root cause analysis:
+
+**Temperature:** 0.3 (range: 0.0-1.0)
+- Lower values produce more consistent, contextual questions
+- Reduces randomness and speculative responses
+- Pre-configured default; override via `AI_TEMPERATURE` in `.env` only if needed
+
+**Top-P (Nucleus Sampling):** 0.85 (range: 0.0-1.0)
+- Balances focus with necessary flexibility
+- Limits token selection to top 85% probability mass
+- Pre-configured default; override via `AI_TOP_P` in `.env` only if needed
+
+**These are hardcoded sensible defaults in `backend/app/core/settings.py`** — no `.env` configuration required unless you want to experiment with different values.
+
+**Prompt Engineering:** Questions are generated using structured prompts with:
+- Explicit 5 Whys methodology guidance
+- Step-by-step internal reasoning chains
+- Good vs bad question examples
+- Contextual continuity rules (always reference problem + full Q/A history)
+- Anti-speculation constraints (no guessing beyond provided information)
+
+See `docs/prompt_engineering.md` for detailed prompt strategy and tuning recommendations.
+
 ### Dedup Metrics
 
 Two counters are kept in-memory and surfaced via `GET /health`:

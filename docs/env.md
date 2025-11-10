@@ -7,6 +7,7 @@
 | REDIS_URL | yes | redis://localhost:6379/0 | Session storage |
 | LOG_LEVEL | no | info | Adjust verbosity |
 | GROQ_API_KEY | yes | (none) | AI question & analysis calls |
+| AI_MODEL | no | openai/gpt-oss-20b | Groq model name (e.g., llama-3.3-70b-versatile) |
 | CORS_ALLOW_ORIGINS | no | * | Comma list of allowed origins for browser access; `*` means all |
 
 ## Frontend (.env)
@@ -51,3 +52,16 @@ LOG_LEVEL=info
 GROQ_API_KEY=YOUR_GROQ_KEY_HERE
 CORS_ALLOW_ORIGINS=*
 ```
+
+### Advanced Configuration (Optional)
+
+For tuning AI behavior, these can be set in `.env` to override sensible defaults already configured in the code:
+
+```bash
+# AI Model Configuration (optional overrides)
+AI_MODEL=llama-3.3-70b-versatile    # Default: openai/gpt-oss-20b
+AI_TEMPERATURE=0.3                  # Default: 0.3 (range: 0.0-1.0, recommended: 0.2-0.4 for RCA)
+AI_TOP_P=0.85                       # Default: 0.85 (range: 0.0-1.0, recommended: 0.8-0.9 for RCA)
+```
+
+**Note:** The system is pre-configured with optimal `AI_TEMPERATURE=0.3` and `AI_TOP_P=0.85` for accurate root cause analysis. Only override these if you need to tune for specific use cases (see `docs/prompt_engineering.md`).

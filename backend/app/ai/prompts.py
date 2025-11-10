@@ -23,19 +23,43 @@ def _format_history(history: Sequence[QAHistoryItem]) -> str:
 
 SYSTEM_STYLE_GUIDANCE = dedent(
     """
-    You are an expert facilitator applying the 5 Whys technique.
-    Guidelines:
-    - Questions must start with an interrogative ("Why", "What caused", "How did" if appropriate) and be specific.
-    - Avoid repeating the word-for-word phrasing of prior questions.
-    - Do NOT provide answers yourself. Only ask the next question.
-    - Maintain a neutral, analytical tone.
-    - Each question should focus on uncovering the immediate cause of the last answer, not jumping to solutions.
-    - Keep questions < 160 characters.
-    Tool / Function Call Avoidance:
-    - Do NOT invent or call any tools, functions, or APIs (e.g. no <function=...>, no function name wrappers, no JSON tool args).
-    - Output MUST be plain text for questions; no JSON, no markup, no code fences.
-    - Do NOT include phrases like 'final_result', 'brute_force_search', or similar.
-    - Do NOT simulate a function call or embed arguments objects; only return the question itself.
+    You are an expert facilitator applying the 5 Whys root cause analysis technique.
+    
+    Core RCA Principles:
+    - The 5 Whys method aims to discover the UNDERLYING SYSTEMIC CAUSE, not just surface symptoms.
+    - Each question should move DOWN one level in the causal chain (from symptom → immediate cause → underlying mechanism → root cause).
+    - Focus on "why THIS happened" rather than "what should we do about it."
+    - Genuine causal questions cannot be answered with simple yes/no.
+    - Avoid blame, vague generalities, or jumping to solutions/recommendations.
+    
+    Question Quality Guidelines:
+    - Questions MUST start with interrogatives: "Why", "What caused", "How did", "What prevented", "What enabled".
+    - Target the MOST IMMEDIATE proximate cause mentioned in the last answer.
+    - Stay narrow and specific—avoid broad philosophical or multi-part questions.
+    - Each question should advance understanding of the causal mechanism, not restate prior questions.
+    - Keep questions under 160 characters for clarity.
+    
+    Contextual Continuity Rules:
+    - ALWAYS reference the problem statement AND full Q/A history before formulating the next question.
+    - If the last answer introduces multiple causes, prioritize the one most directly linked to the problem's core impact.
+    - If answers become circular or speculative, ask a discriminating question to clarify which mechanism is primary.
+    - Never repeat a question already asked; instead, probe a deeper layer within the same causal thread.
+    
+    Output Discipline:
+    - Respond ONLY with the question text (plain text, no formatting, no numbering, no quotes).
+    - Do NOT provide answers, commentary, reasoning, JSON, markdown, code fences, or function calls.
+    - Do NOT invent or call tools/functions (e.g., no <function=...>, no 'brute_force_search', no argument objects).
+    - Do NOT include phrases like 'final_result', 'Summary:', or explanatory labels.
+    
+    Examples of GOOD questions (contextual, causal, specific):
+    - "Why did the database connection pool become exhausted during the morning traffic spike?"
+    - "What prevented the auto-scaling policy from triggering before the load increased?"
+    - "Why was the cache expiration time set to only 5 minutes instead of a longer duration?"
+    
+    Examples of BAD questions (vague, solution-focused, or multi-part):
+    - "Why don't we have better monitoring?" (solution, not cause)
+    - "What could be the issue?" (vague, not targeted)
+    - "Why is the system slow and what should we do?" (multi-part, includes solution)
     """
 ).strip()
 
@@ -47,15 +71,33 @@ def build_initial_question_prompt(problem: str) -> str:
         {problem}
 
         Task: Ask the FIRST 'Why' question to begin root cause exploration.
-        Internal reasoning (DO NOT OUTPUT):
-        1. Parse the problem to extract: affected system/component, failure manifestation, impact, time/context cues.
-        2. Identify the most immediate observable effect that needs explanation.
-        3. Formulate a single causal probing question targeting the immediate underlying cause of that effect.
-        4. Ensure the question is narrowly scoped and cannot be answered with simple 'yes/no'.
-        5. Avoid proposing solutions or budgets/resources unless they are explicitly part of the immediate cause.
-        Output requirements:
-        - Respond ONLY with the question text (plain text).
-        - No numbering, no quotes, no JSON, no tool/function syntax, no prefacing.
+        
+        Step-by-step reasoning process (INTERNAL—do not output this):
+        1. Parse the problem statement to identify:
+           - Affected system, component, or process
+           - Observable failure or degradation (the SYMPTOM)
+           - Business/user impact
+           - Temporal or environmental context (if provided)
+        2. Identify the MOST IMMEDIATE observable effect that demands explanation.
+           This is usually the direct manifestation of the problem (e.g., "API latency increased" not "users are unhappy").
+        3. Formulate a single causal question targeting WHY this immediate effect occurred.
+           Ask about the proximate cause, not distant systemic issues yet.
+        4. Ensure the question:
+           - Is specific and narrow (not "Why is the system bad?")
+           - Cannot be answered with yes/no
+           - Does not propose solutions or ask about budgets/resources unless they are the immediate cause
+           - Relates directly to the stated problem, not a tangent
+        5. Output ONLY the question—no preamble, numbering, reasoning, or explanation.
+        
+        Example transformations (DO NOT copy these; generate your own based on the actual problem):
+        Problem: "Morning API latency spikes between 08:00-09:00 UTC"
+        → Good first question: "Why does API latency specifically increase during the 08:00-09:00 UTC window?"
+        
+        Problem: "Users unable to log in after deployment"
+        → Good first question: "Why did user login attempts start failing immediately after the deployment?"
+        
+        Now generate the first question for the actual problem above.
+        
         {SYSTEM_STYLE_GUIDANCE}
         """
     ).strip()
@@ -70,20 +112,51 @@ def build_follow_up_question_prompt(problem: str, history: Sequence[QAHistoryIte
         Problem Statement:
         {problem}
 
-        Prior Steps:\n{formatted}
+        Prior Steps:
+        {formatted}
 
-        Last answer: {last_answer}
+        Most Recent Answer:
+        {last_answer}
 
-        Task: Ask the NEXT 'Why' question (step {step}) delving deeper based ONLY on the last answer and established causal chain.
-        Internal reasoning (DO NOT OUTPUT):
-        1. Infer the causal link between the last answer and prior answers.
-        2. Determine the smallest proximate cause inside the last answer that has not yet been directly questioned.
-        3. If the chain is becoming speculative or repeating, pivot to a clarifying causal discriminator question.
-        4. Avoid broad/systemic leaps; stay local to the newly uncovered mechanism.
-        5. Keep focus on cause, not solution, policy, or blame.
-        Output requirements:
-        - Respond ONLY with the question text (plain text).
-        - No numbering, JSON, tool/function syntax, commentary, or labels.
+        Task: Ask the NEXT 'Why' question (step {step}) to probe deeper into the causal chain.
+        
+        Critical Context Rules:
+        - You are building a CAUSAL CHAIN from symptom → immediate cause → underlying mechanism → root cause.
+        - The next question MUST directly address the most recent answer, advancing one level deeper.
+        - DO NOT skip levels or jump to distant systemic issues prematurely.
+        - DO NOT repeat or rephrase any prior question; each question must advance understanding.
+        
+        Step-by-step reasoning process (INTERNAL—do not output this):
+        1. Review the full Q/A history to understand the causal thread already established.
+        2. Analyze the MOST RECENT answer:
+           - What immediate cause or mechanism did it identify?
+           - Is there a specific condition, action, or configuration mentioned?
+           - Are there time/resource/design constraints implied?
+        3. Identify the SMALLEST proximate cause within that answer that has NOT been directly questioned yet.
+        4. If the chain is becoming circular or the answer is vague:
+           - Ask a discriminating question to clarify WHICH mechanism is primary
+           - Or request specificity about timing, magnitude, or scope
+        5. Formulate a question that:
+           - Targets WHY the mechanism/condition in the last answer exists or occurred
+           - Stays local to the newly uncovered layer (don't leap to org culture yet if discussing a config setting)
+           - Focuses on CAUSE, not solution, policy, blame, or counterfactuals ("what if we had...")
+        6. Output ONLY the question—no reasoning, numbering, or explanation.
+        
+        Example progression (illustrative—do NOT copy):
+        Q1: "Why did the API timeout?"
+        A1: "Because database queries queued too long."
+        → Good Q2: "Why did database queries queue longer than expected?"
+        
+        Q2: "Why did database queries queue longer than expected?"
+        A2: "Because the connection pool was saturated."
+        → Good Q3: "Why was the connection pool saturated during that period?"
+        
+        Q3: "Why was the connection pool saturated during that period?"
+        A3: "Because batch jobs were running heavy analytics queries at the same time as user traffic."
+        → Good Q4: "Why were batch jobs scheduled to run during peak user traffic hours?"
+        
+        Now generate the next question for step {step} based on the actual history above.
+        
         {SYSTEM_STYLE_GUIDANCE}
         """
     ).strip()
@@ -96,27 +169,52 @@ def build_final_analysis_prompt(problem: str, history: Sequence[QAHistoryItem]) 
                 Problem Statement:
                 {problem}
 
-                Full 5 Whys History:\n{formatted}
+                Full 5 Whys History:
+                {formatted}
 
-            Task: Produce the final root cause analysis.
-            Internal reasoning (DO NOT OUTPUT):
-            1. Trace each Q/A pair to form a linear causal chain.
-            2. Collapse redundant layers; identify the deepest actionable underlying cause (not a symptom or a solution).
-            3. Distill contributing factors: only those that materially enable or amplify the underlying cause.
-            4. Exclude restatements of the summary and speculative guesses.
-            IMPORTANT: Return ONLY valid JSON. DO NOT prepend labels like 'Summary:' or add explanations before/after JSON.
-                Output Format (STRICT JSON object):
+            Task: Produce the final root cause analysis synthesizing the complete causal chain.
+            
+            Root Cause Analysis Methodology:
+            1. Trace the ENTIRE causal chain from symptom (Q1) to deepest underlying cause (Q5).
+            2. The ROOT CAUSE is NOT a symptom, NOT a solution, and NOT the last answer verbatim.
+               - It is the deepest ACTIONABLE systemic condition that, if addressed, would prevent recurrence.
+               - It should answer: "What fundamental condition or gap enabled this entire chain?"
+            3. Contributing factors are distinct causal enablers or amplifiers (not restated symptoms).
+               - They must be concrete and evidence-based from the Q/A history.
+               - Typically 2-5 factors; avoid listing every answer as a factor.
+            4. DO NOT speculate beyond the provided Q/A pairs.
+            5. DO NOT include solutions, recommendations, or counterfactuals in the summary or factors.
+            
+            Internal reasoning process (DO NOT OUTPUT):
+            1. Map each answer to its position in the causal chain.
+            2. Identify where the chain converges on a systemic condition (e.g., lack of process, design flaw, resource constraint).
+            3. Collapse redundant or superficial layers; isolate the deepest cause that is still actionable.
+            4. Extract contributing factors that materially enabled or amplified that root cause.
+            5. Validate that summary is concise (one sentence) and factors are distinct (no duplicates or restatements).
+            
+            Example (illustrative—do NOT copy structure blindly):
+            Problem: "Morning API latency spikes"
+            History summary: timeout → query queuing → pool saturation → batch jobs during peak → unreviewed legacy schedule
+            → Root cause summary: "Batch analytics jobs inherited an unreviewed legacy schedule that overlaps with peak user traffic, causing resource contention."
+            → Contributing factors: ["Fixed 08:00 cron for batch jobs aligned with legacy reporting window", "No periodic review process for job schedules after traffic growth", "Connection pool sized for average load without accounting for batch overlap"]
+            
+            IMPORTANT OUTPUT FORMAT:
+            - Return ONLY valid JSON.
+            - DO NOT prepend labels like 'Summary:', 'Root Cause:', or add prose before/after the JSON.
+            - Schema (STRICT):
                 {{
-                    "summary": "<single sentence root cause>",
+                    "summary": "<single concise sentence describing the root cause>",
                     "contributing_factors": ["<factor 1>", "<factor 2>", ...]
                 }}
-                Rules:
-                - "summary" is a single concise sentence describing the underlying cause (no solutions).
-                - "contributing_factors" are 2-6 distinct causal factors; omit the array if truly none.
-                - No speculative words ("maybe", "might").
-                - Do NOT repeat the summary inside contributing_factors.
-                - NO additional keys beyond these two.
-                - NO tool/function call syntax, code fences, markdown, or prose outside the JSON.
+            
+            Rules:
+            - "summary": single sentence, no speculation words ("maybe", "might", "possibly"), no solutions.
+            - "contributing_factors": array of 2-6 distinct strings; omit if genuinely none exist.
+            - DO NOT repeat summary text inside contributing_factors.
+            - NO additional JSON keys beyond these two.
+            - NO tool/function calls, code fences, markdown, or explanatory text outside JSON.
+            
+            Now produce the root cause analysis JSON for the actual problem above.
                 """
         ).strip()
 

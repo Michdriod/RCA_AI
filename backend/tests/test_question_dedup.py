@@ -10,7 +10,7 @@ class StubAsyncAgent:
     def __init__(self):
         self.calls = 0
 
-    async def run(self, prompt, output_type=None):  # async path used by generate_question_async
+    async def run(self, prompt, output_type=None, model_settings=None):  # async path used by generate_question_async
         self.calls += 1
         text = (
             "Why did the database timeout?"

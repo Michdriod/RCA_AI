@@ -10,7 +10,7 @@ class StubAlwaysDuplicateAgent:
     def __init__(self):
         self.calls = 0
 
-    async def run(self, prompt, output_type=None):
+    async def run(self, prompt, output_type=None, model_settings=None):
         self.calls += 1
         # Always return the same question text to force duplicate acceptance path
         text = "Why did the database timeout?"
@@ -24,7 +24,7 @@ class StubDuplicateThenUniqueAgent:
     def __init__(self):
         self.calls = 0
 
-    async def run(self, prompt, output_type=None):
+    async def run(self, prompt, output_type=None, model_settings=None):
         self.calls += 1
         if self.calls == 1:
             text = "Why did the database timeout?"  # duplicate of existing

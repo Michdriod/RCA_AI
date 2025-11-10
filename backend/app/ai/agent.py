@@ -62,6 +62,14 @@ class FiveWhysAI:
         provider = GroqProvider(api_key=api_key)
         model_obj = GroqModel(self.model_name, provider=provider)
         return PydanticAIAgent(model=model_obj)
+    
+    def _get_model_settings(self) -> dict:
+        """Return model parameters (temperature, top_p) from settings for run() calls."""
+        settings = get_settings()
+        return {
+            "temperature": settings.AI_TEMPERATURE,
+            "top_p": settings.AI_TOP_P,
+        }
 
     def _history_items(self, session: Session) -> Sequence[QAHistoryItem]:
         items: list[QAHistoryItem] = []
@@ -101,6 +109,7 @@ class FiveWhysAI:
         """Async variant of generate_question."""
         logger = get_logger("ai")
         started = perf_counter()
+        model_settings = self._get_model_settings()
         try:
             agent = self._resolve_model()
             history_items = self._history_items(session)
@@ -109,11 +118,11 @@ class FiveWhysAI:
             else:
                 prompt = build_follow_up_question_prompt(session.problem, history_items)
             try:
-                run_result = await agent.run(prompt, output_type=QuestionResponse)
+                run_result = await agent.run(prompt, output_type=QuestionResponse, model_settings=model_settings)
                 question_text = run_result.output.question.strip()
             except ModelHTTPError as mh:
                 if "tool_use_failed" in str(mh):
-                    raw_run = await agent.run(prompt + "\n\nReturn ONLY the next question as plain text.")
+                    raw_run = await agent.run(prompt + "\n\nReturn ONLY the next question as plain text.", model_settings=model_settings)
                     question_text = self._extract_text(raw_run).strip()
                 else:
                     raise
@@ -124,6 +133,7 @@ class FiveWhysAI:
                 session=session,
                 initial_question=question_text,
                 logger=logger,
+                model_settings=model_settings,
             )
         except (HTTPError, ValidationError, ModelHTTPError) as e:
             raise AIServiceError(f"Question generation failed (async): {e}") from e
@@ -152,18 +162,26 @@ class FiveWhysAI:
             raise AIServiceError("Cannot analyze root cause without any Q/A history")
         logger = get_logger("ai")
         started = perf_counter()
+        model_settings = self._get_model_settings()
         try:
             agent = self._resolve_model()
             prompt = build_final_analysis_prompt(session.problem, history_items)
             try:
-                run_result = await agent.run(prompt, output_type=RootCauseResponse)
+                run_result = await agent.run(prompt, output_type=RootCauseResponse, model_settings=model_settings)
                 rc = RootCause(
                     summary=run_result.output.summary.strip(),
                     contributing_factors=[f.strip() for f in run_result.output.contributing_factors if f.strip()],
                 )
             except ModelHTTPError as mh:
                 if "tool_use_failed" in str(mh):
-                    raw = await agent.run(prompt + "\n\nReturn JSON with keys: summary (string), contributing_factors (list of short strings). If unsure, guess.")
+                    # Fallback: request strict JSON without permitting fabrication.
+                    raw = await agent.run(
+                        prompt
+                        + "\n\nReturn ONLY valid JSON with keys: summary (string), contributing_factors (list of short, concrete strings)."
+                        + " Do NOT invent or speculate beyond provided Q/A history."
+                        + " If a value is genuinely unavailable, set summary to an empty string and contributing_factors to an empty list.",
+                        model_settings=model_settings,
+                    )
                     import json as _json
                     text = self._extract_text(raw).strip()
                     # Strip accidental leading labels (e.g., 'Summary: { ... }')
@@ -207,6 +225,7 @@ class FiveWhysAI:
         session: Session,
         initial_question: str,
         logger,
+        model_settings: dict,
     ) -> str:
         """Apply semantic deduplication with retry + metrics.
 
@@ -250,11 +269,11 @@ class FiveWhysAI:
                 + "'."
             )
             try:
-                retry_result = await agent.run(penalty_prompt, output_type=QuestionResponse)
+                retry_result = await agent.run(penalty_prompt, output_type=QuestionResponse, model_settings=model_settings)
                 candidate = retry_result.output.question.strip()
             except ModelHTTPError as mh2:
                 if "tool_use_failed" in str(mh2):
-                    raw_retry = await agent.run(penalty_prompt + "\nReturn ONLY the refined question as plain text.")
+                    raw_retry = await agent.run(penalty_prompt + "\nReturn ONLY the refined question as plain text.", model_settings=model_settings)
                     candidate = self._extract_text(raw_retry).strip()
                 else:
                     break
