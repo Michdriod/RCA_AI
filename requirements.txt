@@ -11,7 +11,7 @@ pydantic-ai
 
 ## Redis (session store)
 redis
-
+## redis[hiredis]
 ## HTTP client (external callback / future integrations)
 httpx
 
