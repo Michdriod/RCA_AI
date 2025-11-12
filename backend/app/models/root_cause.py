@@ -2,7 +2,8 @@
 Represents the synthesized root cause analysis after 5 Whys.
 """
 from __future__ import annotations
-from pydantic import BaseModel, Field, field_validator
+from typing import Optional
+from pydantic import BaseModel, Field, field_validator, model_serializer
 
 
 class RootCause(BaseModel):
@@ -15,6 +16,14 @@ class RootCause(BaseModel):
             if not f.strip():
                 raise ValueError("Contributing factors must be non-empty strings")
         return v
+
+    @model_serializer
+    def serialize_model(self):
+        """Exclude contributing_factors from output if empty."""
+        result = {"summary": self.summary}
+        if self.contributing_factors:
+            result["contributing_factors"] = self.contributing_factors
+        return result
 
     model_config = {
         "extra": "forbid",

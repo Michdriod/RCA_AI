@@ -15,6 +15,7 @@ from time import perf_counter
 import uuid
 from typing import Sequence, Optional, Type
 import os
+from enum import Enum
 from pydantic import BaseModel, Field, ValidationError
 from httpx import HTTPError
 from pydantic_ai import Agent as PydanticAIAgent
@@ -34,6 +35,13 @@ from .prompts import (
     build_final_analysis_prompt,
 )
 
+# Answer classification categories for guiding question logic
+class AnswerType(str, Enum):
+    UNKNOWN = "UNKNOWN"  # "I don't know", "not sure", etc.
+    VAGUE = "VAGUE"      # Generic, no specific mechanism/component
+    MECHANISM = "MECHANISM"  # References concrete cause/component/resource
+    CONTEXT = "CONTEXT"  # Provides setting/condition but not direct cause
+
 # Output schemas for pydantic-ai runs
 class QuestionResponse(BaseModel):
     question: str = Field(..., min_length=1)
@@ -51,8 +59,50 @@ class FiveWhysAI:
         # Metrics counters (simple in-memory; reset on process restart)
         self.dedup_retries_total: int = 0
         self.dedup_duplicates_accepted: int = 0
+        self.unknown_count: int = 0
+        self.unknown_streak: int = 0
+        self.evidence_pivots: int = 0
 
     # -------- internal helpers ---------
+    def _classify_answer(self, answer_text: str) -> AnswerType:
+        """Classify answer to guide next question strategy.
+        
+        UNKNOWN: explicit uncertainty ("I don't know", "not sure", "can't say")
+        VAGUE: generic/abstract without specific mechanism
+        MECHANISM: references concrete component, resource, or process
+        CONTEXT: provides conditions/settings but not direct cause
+        """
+        text = answer_text.lower().strip()
+        # UNKNOWN patterns
+        if len(text) < 8 or any(p in text for p in ["don't know", "dont know", "idk", "not sure", "can't say", "cant say", "no idea", "unsure"]):
+            return AnswerType.UNKNOWN
+        # MECHANISM indicators (concrete nouns, technical terms, metrics)
+        mechanism_indicators = [
+            "process", "service", "component", "cpu", "memory", "disk", "network",
+            "database", "query", "connection", "pool", "thread", "cache", "api",
+            "server", "load", "timeout", "error", "log", "metric", "spike", "usage",
+            "queue", "batch", "job", "schedule", "config", "setting", "version"
+        ]
+        if any(ind in text for ind in mechanism_indicators):
+            return AnswerType.MECHANISM
+        # VAGUE if generic adjectives without specifics
+        if any(v in text for v in ["better", "improved", "enhanced", "changed", "updated", "modified"]) and len(text.split()) < 15:
+            return AnswerType.VAGUE
+        # Default: CONTEXT (provides information but not direct mechanism)
+        return AnswerType.CONTEXT
+    
+    def _compute_depth_score(self, session: Session) -> int:
+        """Count distinct mechanistic layers (exclude UNKNOWN, pure restatements).
+        
+        Returns count of answers that reference concrete mechanisms/components.
+        """
+        depth = 0
+        for ans in session.answers:
+            ans_type = self._classify_answer(ans.text)
+            if ans_type == AnswerType.MECHANISM:
+                depth += 1
+        return depth
+    
     def _resolve_model(self) -> PydanticAIAgent:
         """Create Groq-bound Agent instance (model only). Output schema provided per run via output_type."""
         settings = get_settings()
@@ -110,13 +160,46 @@ class FiveWhysAI:
         logger = get_logger("ai")
         started = perf_counter()
         model_settings = self._get_model_settings()
+        
+        # Classify last answer if exists
+        last_answer_type = None
+        if session.answers:
+            last_answer_type = self._classify_answer(session.answers[-1].text)
+            logger.info(
+                "ai.answer.classified",
+                session_id=session.session_id,
+                step=session.step,
+                answer_type=last_answer_type.value,
+            )
+            # Track UNKNOWN metrics
+            if last_answer_type == AnswerType.UNKNOWN:
+                self.unknown_count += 1
+                self.unknown_streak += 1
+            else:
+                self.unknown_streak = 0
+        
         try:
             agent = self._resolve_model()
             history_items = self._history_items(session)
             if not session.questions:
                 prompt = build_initial_question_prompt(session.problem)
             else:
-                prompt = build_follow_up_question_prompt(session.problem, history_items)
+                # Build follow-up with classification context
+                pivot_mode = None
+                if last_answer_type == AnswerType.UNKNOWN:
+                    self.evidence_pivots += 1
+                    if self.unknown_streak >= 2:
+                        pivot_mode = "reproduction"
+                    elif self.unknown_count >= 3 and self._compute_depth_score(session) < 2:
+                        pivot_mode = "metric"
+                    else:
+                        pivot_mode = "observable"
+                prompt = build_follow_up_question_prompt(
+                    session.problem,
+                    history_items,
+                    last_answer_type=last_answer_type,
+                    pivot_mode=pivot_mode
+                )
             try:
                 run_result = await agent.run(prompt, output_type=QuestionResponse, model_settings=model_settings)
                 question_text = run_result.output.question.strip()
@@ -147,6 +230,9 @@ class FiveWhysAI:
                 model=self.model_name,
                 dedup_retries_total=self.dedup_retries_total,
                 dedup_duplicates_accepted=self.dedup_duplicates_accepted,
+                unknown_count=self.unknown_count,
+                unknown_streak=self.unknown_streak,
+                evidence_pivots=self.evidence_pivots,
             )
         return Question(
             id=str(uuid.uuid4()),
@@ -163,41 +249,50 @@ class FiveWhysAI:
         logger = get_logger("ai")
         started = perf_counter()
         model_settings = self._get_model_settings()
+        depth_score = self._compute_depth_score(session)
+        
         try:
             agent = self._resolve_model()
             prompt = build_final_analysis_prompt(session.problem, history_items)
             try:
                 run_result = await agent.run(prompt, output_type=RootCauseResponse, model_settings=model_settings)
-                rc = RootCause(
-                    summary=run_result.output.summary.strip(),
-                    contributing_factors=[f.strip() for f in run_result.output.contributing_factors if f.strip()],
-                )
+                summary = run_result.output.summary.strip()
+                factors = [f.strip() for f in run_result.output.contributing_factors if f.strip()]
+                
+                # Always produce summary; if shallow depth, acknowledge limited evidence in log only
+                if not summary:
+                    # Fallback: construct minimal summary from problem statement
+                    summary = f"Root cause analysis based on available evidence: {session.problem[:100]}"
+                
+                rc = RootCause(summary=summary, contributing_factors=factors)
             except ModelHTTPError as mh:
                 if "tool_use_failed" in str(mh):
                     # Fallback: request strict JSON without permitting fabrication.
                     raw = await agent.run(
                         prompt
-                        + "\n\nReturn ONLY valid JSON with keys: summary (string), contributing_factors (list of short, concrete strings)."
+                        + "\n\nReturn ONLY valid JSON with keys: summary (string, NEVER empty), contributing_factors (list of short, concrete strings)."
                         + " Do NOT invent or speculate beyond provided Q/A history."
-                        + " If a value is genuinely unavailable, set summary to an empty string and contributing_factors to an empty list.",
+                        + " Always produce a summary sentence based on the causal chain identified.",
                         model_settings=model_settings,
                     )
                     import json as _json
                     text = self._extract_text(raw).strip()
                     # Strip accidental leading labels (e.g., 'Summary: { ... }')
                     if text.lower().startswith("summary:"):
-                        # Attempt to isolate JSON after first '{'
                         brace_index = text.find('{')
                         if brace_index != -1:
                             text = text[brace_index:]
                     try:
                         data = _json.loads(text)
-                        summary = str(data.get("summary") or text)
+                        summary = str(data.get("summary") or "")
+                        if not summary:
+                            summary = f"Root cause synthesis from problem context: {session.problem[:100]}"
                         factors = data.get("contributing_factors") or []
                         if not isinstance(factors, list):
-                            factors = [str(factors)]
+                            factors = [str(factors)] if factors else []
                     except Exception:  # noqa: BLE001
-                        summary, factors = text, []
+                        summary = text if text else f"Root cause context: {session.problem[:100]}"
+                        factors = []
                     rc = RootCause(summary=summary.strip(), contributing_factors=[f.strip() for f in factors if f and str(f).strip()])
                 else:
                     raise
@@ -209,6 +304,7 @@ class FiveWhysAI:
                 "ai.root_cause",
                 session_id=session.session_id,
                 step=session.step,
+                depth_score=depth_score,
                 factors=len(rc.contributing_factors) if 'rc' in locals() else None,
                 duration_ms=round(duration_ms, 2),
                 model=self.model_name,
@@ -306,6 +402,9 @@ class FiveWhysAI:
         return {
             "dedup_retries_total": self.dedup_retries_total,
             "dedup_duplicates_accepted": self.dedup_duplicates_accepted,
+            "unknown_count": self.unknown_count,
+            "unknown_streak": self.unknown_streak,
+            "evidence_pivots": self.evidence_pivots,
         }
 
 __all__ = [

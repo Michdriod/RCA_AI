@@ -5,7 +5,7 @@ The output style encourages concise, clear, non-repetitive questioning.
 from __future__ import annotations
 
 from textwrap import dedent
-from typing import Sequence
+from typing import Sequence, Optional
 from pydantic import BaseModel
 
 class QAHistoryItem(BaseModel):
@@ -33,17 +33,19 @@ SYSTEM_STYLE_GUIDANCE = dedent(
     - Avoid blame, vague generalities, or jumping to solutions/recommendations.
     
     Question Quality Guidelines:
-    - Questions MUST start with interrogatives: "Why", "What caused", "How did", "What prevented", "What enabled".
+    - Questions MUST start with interrogatives: "Why", "What caused", "How did", "What prevented", "What enabled", "Which".
     - Target the MOST IMMEDIATE proximate cause mentioned in the last answer.
     - Stay narrow and specific—avoid broad philosophical or multi-part questions.
     - Each question should advance understanding of the causal mechanism, not restate prior questions.
     - Keep questions under 160 characters for clarity.
+    - NEVER ask about vendor strategic motives ("Why did Apple decide...") unless user explicitly provided such information.
     
     Contextual Continuity Rules:
     - ALWAYS reference the problem statement AND full Q/A history before formulating the next question.
     - If the last answer introduces multiple causes, prioritize the one most directly linked to the problem's core impact.
     - If answers become circular or speculative, ask a discriminating question to clarify which mechanism is primary.
     - Never repeat a question already asked; instead, probe a deeper layer within the same causal thread.
+    - If answer is UNKNOWN ("I don't know"), pivot to concrete observables (metrics, components, timing, sequence).
     
     Output Discipline:
     - Respond ONLY with the question text (plain text, no formatting, no numbering, no quotes).
@@ -55,11 +57,13 @@ SYSTEM_STYLE_GUIDANCE = dedent(
     - "Why did the database connection pool become exhausted during the morning traffic spike?"
     - "What prevented the auto-scaling policy from triggering before the load increased?"
     - "Why was the cache expiration time set to only 5 minutes instead of a longer duration?"
+    - "Which process shows the highest CPU usage when the lag begins?"
     
     Examples of BAD questions (vague, solution-focused, or multi-part):
     - "Why don't we have better monitoring?" (solution, not cause)
     - "What could be the issue?" (vague, not targeted)
     - "Why is the system slow and what should we do?" (multi-part, includes solution)
+    - "Why did Apple decide to change the display subsystem?" (vendor motive speculation without user evidence)
     """
 ).strip()
 
@@ -103,10 +107,51 @@ def build_initial_question_prompt(problem: str) -> str:
     ).strip()
 
 
-def build_follow_up_question_prompt(problem: str, history: Sequence[QAHistoryItem]) -> str:
+def build_follow_up_question_prompt(
+    problem: str,
+    history: Sequence[QAHistoryItem],
+    last_answer_type: Optional[str] = None,
+    pivot_mode: Optional[str] = None
+) -> str:
     formatted = _format_history(history)
     last_answer = history[-1].answer if history else "(none)"
     step = (history[-1].index + 1) if history else 1
+    
+    # Build pivot guidance if needed
+    pivot_guidance = ""
+    if pivot_mode == "observable":
+        pivot_guidance = """
+        PIVOT REQUIRED: Last answer was UNKNOWN.
+        Instead of asking another abstract "Why", request a concrete observable:
+        - What measurable change occurs first (metric, resource usage, timing)?
+        - Which specific component, process, or service exhibits abnormal behavior?
+        - What event or action immediately precedes the symptom?
+        """
+    elif pivot_mode == "reproduction":
+        pivot_guidance = """
+        PIVOT REQUIRED: Multiple consecutive UNKNOWN answers.
+        Ask for reproduction pattern:
+        - Under which specific conditions does the problem occur?
+        - What sequence of actions triggers it?
+        - Does it happen consistently or intermittently?
+        """
+    elif pivot_mode == "metric":
+        pivot_guidance = """
+        PIVOT REQUIRED: Multiple UNKNOWN answers with insufficient depth.
+        Force evidence collection by requesting a measurable metric:
+        - CPU %, memory usage, error count, latency, throughput?
+        - Which metric spikes or drops when the problem occurs?
+        - What are the before/after values?
+        """
+    elif last_answer_type == "VAGUE":
+        pivot_guidance = """
+        CAUTION: Last answer was VAGUE (generic, no specific mechanism).
+        Ask for concrete specificity:
+        - Which exact component, process, or resource is involved?
+        - What specific action or configuration caused this?
+        - Avoid accepting abstract descriptions; probe for technical detail.
+        """
+    
     return dedent(
         f"""
         Problem Statement:
@@ -117,6 +162,8 @@ def build_follow_up_question_prompt(problem: str, history: Sequence[QAHistoryIte
 
         Most Recent Answer:
         {last_answer}
+        
+        {pivot_guidance}
 
         Task: Ask the NEXT 'Why' question (step {step}) to probe deeper into the causal chain.
         
@@ -182,15 +229,34 @@ def build_final_analysis_prompt(problem: str, history: Sequence[QAHistoryItem]) 
             3. Contributing factors are distinct causal enablers or amplifiers (not restated symptoms).
                - They must be concrete and evidence-based from the Q/A history.
                - Typically 2-5 factors; avoid listing every answer as a factor.
+               - OMIT entirely if no valid distinct factors exist (do not force vague ones).
             4. DO NOT speculate beyond the provided Q/A pairs.
             5. DO NOT include solutions, recommendations, or counterfactuals in the summary or factors.
+            6. DO NOT include vendor motive speculation unless user explicitly stated it.
+            7. ALWAYS produce a root cause summary; NEVER leave it empty or say "insufficient evidence" in the summary field itself.
+            
+            Factor Vagueness Filter (CRITICAL):
+            REJECT these patterns from contributing_factors:
+            - Generic adjectives without mechanism: "improved look and feel", "better UI", "enhanced security"
+            - Restated symptoms: if it's just rewording the problem, exclude it
+            - Solutions or recommendations: "should have done X"
+            - Vendor strategic motives: "Apple wanted to...", "design decision to..."
+            - Pure restatements: if similar to another factor or the summary, deduplicate
+            
+            ACCEPT only factors with concrete mechanism references:
+            - "High CPU usage in WindowServer process"
+            - "Connection pool sized for 50 but peak load requires 200"
+            - "Batch job schedule overlaps with user traffic window"
+            - "No automatic retry logic for transient failures"
             
             Internal reasoning process (DO NOT OUTPUT):
             1. Map each answer to its position in the causal chain.
             2. Identify where the chain converges on a systemic condition (e.g., lack of process, design flaw, resource constraint).
             3. Collapse redundant or superficial layers; isolate the deepest cause that is still actionable.
             4. Extract contributing factors that materially enabled or amplified that root cause.
-            5. Validate that summary is concise (one sentence) and factors are distinct (no duplicates or restatements).
+            5. Apply vagueness filter: remove any factor lacking a concrete mechanism/component/metric reference.
+            6. Validate that summary is concise (one sentence) and factors are distinct (no duplicates or restatements).
+            7. If no valid factors remain after filtering, set contributing_factors to an empty array.
             
             Example (illustrative—do NOT copy structure blindly):
             Problem: "Morning API latency spikes"
@@ -208,8 +274,8 @@ def build_final_analysis_prompt(problem: str, history: Sequence[QAHistoryItem]) 
                 }}
             
             Rules:
-            - "summary": single sentence, no speculation words ("maybe", "might", "possibly"), no solutions.
-            - "contributing_factors": array of 2-6 distinct strings; omit if genuinely none exist.
+            - "summary": single sentence, no speculation words ("maybe", "might", "possibly"), no solutions, NEVER empty.
+            - "contributing_factors": array of 0-6 distinct concrete strings; omit entirely (empty array) if none pass vagueness filter.
             - DO NOT repeat summary text inside contributing_factors.
             - NO additional JSON keys beyond these two.
             - NO tool/function calls, code fences, markdown, or explanatory text outside JSON.
