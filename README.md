@@ -69,6 +69,27 @@ GROQ_API_KEY=YOUR_GROQ_KEY_HERE
 
 ## Running
 
+### Docker (Production - Recommended)
+
+Requires **Redis Cloud** (or other external Redis):
+
+```bash
+# Build image
+docker build -t rca-app:latest .
+
+# Run with Redis Cloud
+docker run -d -p 8000:8000 \
+  -e GROQ_API_KEY=your_key \
+  -e REDIS_URL=rediss://default:password@host:port \
+  rca-app:latest
+
+# Visit http://localhost:8000
+```
+
+See `DOCKER.md` for complete deployment guide.
+
+### Local Development
+
 Backend (from repo root):
 
 ```bash
